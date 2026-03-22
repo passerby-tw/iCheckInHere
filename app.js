@@ -1,6 +1,6 @@
 // ==========================================
-// 📍 iCheckInHere - 領域驅動架構 (v0.7.3 Debug)
-// 包含: Soft Delete, 拔除 Filter 的 Debug 掃描器
+// 📍 iCheckInHere - 領域驅動架構 (v0.7.4 Offline-First)
+// 包含: 本地專案註冊表 (0延遲)、背景雲端同步、手動綁定防呆
 // ==========================================
 
 const CLIENT_ID = '201112785315-pg6mrlaeig65sfu24mjfkjj544sf5mlj.apps.googleusercontent.com';
@@ -8,6 +8,9 @@ const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googlea
 
 let records = JSON.parse(localStorage.getItem('checkins') || '[]');
 let currentProject = JSON.parse(localStorage.getItem('current_project') || 'null');
+// 🚀 新增：本地專案歷史註冊表，徹底消滅 API 搜尋延遲
+let projectHistory = JSON.parse(localStorage.getItem('project_history') || '[]'); 
+
 let syncSession = 'UNTRUSTED';
 let currentAccessToken = null;
 let tokenClient;
@@ -104,8 +107,19 @@ function withAuth(actionCallback) {
 }
 
 // ==========================================
-// 2. 專案建立與 Metadata 辨識 
+// 2. 專案建立與歷史註冊表
 // ==========================================
+function saveToProjectHistory(id, name, time) {
+    const existing = projectHistory.find(p => p.id === id);
+    if (existing) {
+        if (name !== '手動綁定專案 (載入後更新)') existing.name = name;
+    } else {
+        projectHistory.push({ id, name, createdTime: time });
+    }
+    projectHistory.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
+    localStorage.setItem('project_history', JSON.stringify(projectHistory));
+}
+
 function createNewProject() {
     withAuth(async (token) => {
         if (records.some(r => r.sync_status === 'LOCAL_ONLY') && !confirm('⚠️ 有未同步資料，切換專案將重置工作區。確定繼續嗎？')) return;
@@ -130,12 +144,9 @@ function createNewProject() {
                 method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ values: [["ID", "照片網址"]] })
             });
-            
-            // 寫入 description (即時索引標籤)
-            await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}`, {
-                method: 'PATCH', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ description: 'iCheckInHere_Workspace_v07' })
-            });
+
+            // 🚀 核心：建立成功後，立刻寫入本地註冊表，下次開啟秒抓！
+            saveToProjectHistory(sheetId, title, new Date().toISOString());
 
             currentProject = { id: sheetId, name: title };
             localStorage.setItem('current_project', JSON.stringify(currentProject));
@@ -146,42 +157,63 @@ function createNewProject() {
     });
 }
 
-// 🚀 這是你要求的拔除 Filter，印出所有檔案資訊的 Debug 版本
 function openProjectSelector() {
-    withAuth(async (token) => {
-        document.getElementById('projectModal').style.display = 'flex';
-        const container = document.getElementById('projectListContainer');
-        container.innerHTML = '掃描雲端專案中... (Debug 模式)';
-        
-        try {
-            // 只依賴 drive.file 權限抓取此 APP 建的所有試算表，要求回傳 description
-            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
-            const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime,description)`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await res.json();
-            
-            const allFiles = data.files || [];
-            
-            if (allFiles.length === 0) {
-                container.innerHTML = '<p>Google Drive API 查無任何由此 APP 建立的專案。請點擊「建立專案」產生新的資料庫。</p>';
-                return;
+    document.getElementById('projectModal').style.display = 'flex';
+    renderProjectListModal(); // 🚀 先瞬間渲染本地歷史紀錄 (0延遲)
+
+    // 🚀 背景偷偷跑雲端掃描，幫忙抓取「在別台手機建立」的專案
+    if (currentAccessToken) {
+        const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+        fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&pageSize=50&fields=files(id,name,createdTime)`, {
+            headers: { 'Authorization': `Bearer ${currentAccessToken}` }
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.files) {
+                data.files.forEach(f => {
+                    // 為了安全，只把檔名包含 iCheckInHere 的加入註冊表
+                    if (f.name.includes('iCheckInHere')) saveToProjectHistory(f.id, f.name, f.createdTime);
+                });
+                renderProjectListModal(); // 雲端資料回來後，再刷新一次介面
             }
-            
-            // 直接渲染所有抓到的檔案，並把 description 印在畫面上
-            container.innerHTML = allFiles.map(f => `
-                <div class="project-item" onclick="bindProject('${f.id}', '${f.name}')">
-                    <strong>${f.name}</strong><br>
-                    <small style="color:#666;">建立於: ${new Date(f.createdTime).toLocaleDateString()}</small><br>
-                    <small style="color:#d9534f; font-weight: bold;">[Debug 標籤]: ${f.description || '無 description (undefined)'}</small>
-                </div>
-            `).join('');
-            
-        } catch (e) { 
-            container.innerHTML = '🔴 搜尋失敗，請檢查主控台 (Console)'; 
-            console.error(e); 
-        }
-    });
+        }).catch(e => console.log('背景雲端掃描失敗', e));
+    }
+}
+
+function renderProjectListModal() {
+    const container = document.getElementById('projectListContainer');
+    let html = '';
+
+    if (projectHistory.length === 0) {
+        html += `<p style="color:#666; font-size:0.9em;">目前無歷史紀錄。正在背景同步雲端專案...</p>`;
+    } else {
+        html += projectHistory.map(f => `
+            <div class="project-item" onclick="bindProject('${f.id}', '${f.name}')">
+                <strong>${f.name}</strong><br>
+                <small style="color:#666;">建立於: ${new Date(f.createdTime).toLocaleString()}</small>
+            </div>
+        `).join('');
+    }
+
+    // 🚀 終極防呆：手動綁定網址 (如果跨裝置且雲端 API 當機時的救星)
+    html += `
+        <hr style="margin: 20px 0; border: 0.5px solid #eee;">
+        <p style="font-size: 0.85em; color: #666; margin-bottom: 5px; font-weight:bold;">找不到專案？手動貼上網址綁定：</p>
+        <div style="display: flex; gap: 5px;">
+            <input type="text" id="manualUrlInput" placeholder="貼上 Google 試算表網址..." style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; margin-top:0;">
+            <button onclick="bindManualUrl()" style="background:#0052cc; color:white; border:none; border-radius:4px; padding:0 15px; font-weight:bold;">綁定</button>
+        </div>
+    `;
+    container.innerHTML = html;
+}
+
+function bindManualUrl() {
+    const url = document.getElementById('manualUrlInput').value.trim();
+    const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match) return alert('🔴 無效的試算表網址！');
+    const id = match[1];
+    saveToProjectHistory(id, '手動綁定專案 (覆寫後更新檔名)', new Date().toISOString());
+    bindProject(id, '手動綁定專案');
 }
 
 function closeProjectSelector() { document.getElementById('projectModal').style.display = 'none'; }
@@ -259,6 +291,15 @@ function pullFromCloud() {
     logMsg('⏳ 載入並過濾已刪除資料...');
     withAuth(async (token) => {
         try {
+            // 順便更新本地註冊表的專案名稱 (如果從手動綁定進來的)
+            const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${currentProject.id}`, { headers:{'Authorization':`Bearer ${token}`} });
+            const meta = await metaRes.json();
+            if (meta.properties && meta.properties.title) {
+                currentProject.name = meta.properties.title;
+                saveToProjectHistory(currentProject.id, currentProject.name, new Date().toISOString());
+                localStorage.setItem('current_project', JSON.stringify(currentProject));
+            }
+
             const [mainRes, photoRes] = await Promise.all([
                 fetch(`https://sheets.googleapis.com/v4/spreadsheets/${currentProject.id}/values/打卡主檔!A:I`, { headers:{'Authorization':`Bearer ${token}`} }),
                 fetch(`https://sheets.googleapis.com/v4/spreadsheets/${currentProject.id}/values/照片交易檔!A:B`, { headers:{'Authorization':`Bearer ${token}`} })
@@ -288,7 +329,7 @@ function pullFromCloud() {
             records = newRecords.reverse();
             evaluateSession(); 
             logMsg('🟢 載入完成！');
-        } catch (e) { logMsg('🔴 載入失敗'); console.error(e); }
+        } catch (e) { logMsg('🔴 載入失敗，權限不足或檔案已刪除'); console.error(e); }
     });
 }
 
@@ -346,7 +387,7 @@ function deleteRecord(id) {
 
 function shareRecord(id) {
     const r = records.find(x => x.id === id);
-    const mapsUrl = `http://googleusercontent.com/maps.google.com/8{r.latitude},${r.longitude}`;
+    const mapsUrl = `http://googleusercontent.com/maps.google.com/9{r.latitude},${r.longitude}`;
     let text = `📍 iCheckInHere 現勘打卡\n⏱️ 時間: ${new Date(r.check_in_time).toLocaleString()}\n⚡ 台電: ${r.tp_coord}\n🗺️ 導航: ${mapsUrl}\n`;
     if (r.notes) text += `📝 備註: ${r.notes}\n`;
     if (navigator.share) { navigator.share({ title: '現勘座標', text: text }).catch(e=>console.log(e)); } 
