@@ -1,5 +1,6 @@
 // ==========================================
-// 📍 iCheckInHere - 領域驅動架構 (v0.7 SPEC)
+// 📍 iCheckInHere - 領域驅動架構 (v0.7.2)
+// 包含: Soft Delete, Metadata 雙軌並行搜尋
 // ==========================================
 
 const CLIENT_ID = '201112785315-pg6mrlaeig65sfu24mjfkjj544sf5mlj.apps.googleusercontent.com';
@@ -83,7 +84,7 @@ function evaluateSession() {
     } else {
         syncSession = 'UNTRUSTED';
         document.getElementById('sessionStatus').className = 'status-badge status-untrusted';
-        document.getElementById('sessionStatus').innerText = '⚠️ UNTRUSTED (打卡僅存本地)';
+        document.getElementById('sessionStatus').innerText = '⚠️ UNTRUSTED (資料僅存本地)';
     }
     localStorage.setItem('checkins', JSON.stringify(records));
     renderUI();
@@ -103,7 +104,7 @@ function withAuth(actionCallback) {
 }
 
 // ==========================================
-// 2. 專案建立與 Metadata 辨識 (改用 Description)
+// 2. 專案建立與 Metadata 辨識 (🚀 雙軌並行架構)
 // ==========================================
 function createNewProject() {
     withAuth(async (token) => {
@@ -130,10 +131,10 @@ function createNewProject() {
                 body: JSON.stringify({ values: [["ID", "照片網址"]] })
             });
             
-            // 🚀 核心修正：將 Metadata 寫入 description，確保即時被索引
+            // 寫入標準 properties
             await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}`, {
                 method: 'PATCH', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ description: 'iCheckInHere_Workspace_v07' })
+                body: JSON.stringify({ properties: { app: 'iCheckInHere', version: 'v0.7' } })
             });
 
             currentProject = { id: sheetId, name: title };
@@ -149,29 +150,51 @@ function openProjectSelector() {
     withAuth(async (token) => {
         document.getElementById('projectModal').style.display = 'flex';
         const container = document.getElementById('projectListContainer');
-        container.innerHTML = '搜尋雲端專案中...';
+        container.innerHTML = '啟動雙軌引擎搜尋中...';
         
         try {
-            // 🚀 核心修正：利用 description 進行精準且即時的搜尋
-            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and description contains 'iCheckInHere_Workspace_v07' and trashed=false");
-            const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,createdTime)`, {
+            // 🚀 軌道 1 (熱軌道)：抓取最近 100 個檔案，用前端過濾 (解決剛建立還沒被 Google 索引的狀況)
+            const queryRecent = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+            const reqRecent = fetch(`https://www.googleapis.com/drive/v3/files?q=${queryRecent}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime,properties)`, {
                 headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await res.json();
+            }).then(res => res.json());
+
+            // 🚀 軌道 2 (冷軌道)：依賴 Google 屬性索引，抓取歷史所有專案 (解決專案被 100 個新檔案淹沒的狀況)
+            const queryIndexed = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and properties has { key='app' and value='iCheckInHere' } and trashed=false");
+            const reqIndexed = fetch(`https://www.googleapis.com/drive/v3/files?q=${queryIndexed}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime,properties)`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).then(res => res.json());
+
+            // 雙軌並行發射請求 (不增加等待時間)
+            const [resRecent, resIndexed] = await Promise.all([reqRecent, reqIndexed]);
+
+            // 過濾熱軌道資料
+            const recentFiltered = (resRecent.files || []).filter(f => f.properties && f.properties.app === 'iCheckInHere');
+            const indexedFiles = resIndexed.files || [];
+
+            // 🚀 合併並去重 (Deduplication)
+            const projectMap = new Map();
+            indexedFiles.forEach(f => projectMap.set(f.id, f)); // 先塞舊的
+            recentFiltered.forEach(f => projectMap.set(f.id, f)); // 再塞新的 (如果重複會覆蓋)
+
+            const combinedFiles = Array.from(projectMap.values());
             
-            if (!data.files || data.files.length === 0) {
+            // 依時間降冪排序 (最新的在上面)
+            combinedFiles.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
+            
+            if (combinedFiles.length === 0) {
                 container.innerHTML = '<p>找不到相容的專案。請點擊「建立專案」產生新的資料庫。</p>';
                 return;
             }
             
-            container.innerHTML = data.files.map(f => `
+            container.innerHTML = combinedFiles.map(f => `
                 <div class="project-item" onclick="bindProject('${f.id}', '${f.name}')">
                     <strong>${f.name}</strong><br>
                     <small style="color:#666;">建立於: ${new Date(f.createdTime).toLocaleDateString()}</small>
                 </div>
             `).join('');
             
-        } catch (e) { container.innerHTML = '🔴 搜尋失敗'; console.error(e); }
+        } catch (e) { container.innerHTML = '🔴 搜尋失敗，請檢查網路狀態'; console.error(e); }
     });
 }
 
@@ -186,7 +209,7 @@ function bindProject(id, name) {
 }
 
 // ==========================================
-// 3. Diff-Sync 同步引擎 (Push / Pull)
+// 3. Diff-Sync 同步引擎
 // ==========================================
 function pushUnsyncedData() {
     if (!currentProject) return alert('請先綁定或建立專案！');
@@ -289,6 +312,9 @@ function pullFromCloud() {
 function performCheckIn() {
     if (!navigator.geolocation) return alert('瀏覽器不支援定位');
     logMsg('⏳ 定位中...');
+    
+    const wasTrusted = (syncSession === 'TRUSTED'); 
+
     navigator.geolocation.getCurrentPosition(pos => {
         let tpString;
         try { tpString = window.wgs84ToTaipower(pos.coords.latitude, pos.coords.longitude); } 
@@ -300,9 +326,9 @@ function performCheckIn() {
             tp_coord: tpString, notes: '', deleted: false, media_links: [], sync_status: 'LOCAL_ONLY'
         });
         
-        evaluateSession();
+        evaluateSession(); 
         logMsg('📍 打卡完成');
-        if (syncSession === 'TRUSTED') pushUnsyncedData();
+        if (wasTrusted) pushUnsyncedData(); 
     }, err => alert('定位失敗，請確認手機權限'), { enableHighAccuracy: true });
 }
 
@@ -315,8 +341,10 @@ function saveEdit(id) {
     record.media_links = linksText.split('\n').map(l=>l.trim()).filter(l=>l!=='');
     record.sync_status = 'LOCAL_ONLY';
     editingId = null;
+    
+    const wasTrusted = (syncSession === 'TRUSTED');
     evaluateSession();
-    if (syncSession === 'TRUSTED') pushUnsyncedData();
+    if (wasTrusted) pushUnsyncedData();
 }
 
 function deleteRecord(id) {
@@ -324,13 +352,15 @@ function deleteRecord(id) {
     const record = records.find(r=>r.id===id);
     record.deleted = true;
     record.sync_status = 'LOCAL_ONLY';
+    
+    const wasTrusted = (syncSession === 'TRUSTED');
     evaluateSession();
-    if (syncSession === 'TRUSTED') pushUnsyncedData();
+    if (wasTrusted) pushUnsyncedData();
 }
 
 function shareRecord(id) {
     const r = records.find(x => x.id === id);
-    const mapsUrl = `https://www.google.com/search?q=https://www.google.com/maps%3Fq%3D24.1413,120.6841{r.latitude},${r.longitude}`;
+    const mapsUrl = `http://googleusercontent.com/maps.google.com/6{r.latitude},${r.longitude}`;
     let text = `📍 iCheckInHere 現勘打卡\n⏱️ 時間: ${new Date(r.check_in_time).toLocaleString()}\n⚡ 台電: ${r.tp_coord}\n🗺️ 導航: ${mapsUrl}\n`;
     if (r.notes) text += `📝 備註: ${r.notes}\n`;
     if (navigator.share) { navigator.share({ title: '現勘座標', text: text }).catch(e=>console.log(e)); } 
