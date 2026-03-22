@@ -1,6 +1,6 @@
 // ==========================================
-// 📍 iCheckInHere - 領域驅動架構 (v0.7.2)
-// 包含: Soft Delete, Metadata 雙軌並行搜尋
+// 📍 iCheckInHere - 領域驅動架構 (v0.7.3 Ultimate)
+// 包含: Soft Delete, 零延遲 Metadata 辨識 (Description + Client Filter)
 // ==========================================
 
 const CLIENT_ID = '201112785315-pg6mrlaeig65sfu24mjfkjj544sf5mlj.apps.googleusercontent.com';
@@ -104,7 +104,7 @@ function withAuth(actionCallback) {
 }
 
 // ==========================================
-// 2. 專案建立與 Metadata 辨識 (🚀 雙軌並行架構)
+// 2. 專案建立與 Metadata 辨識 (🚀 終極防彈版)
 // ==========================================
 function createNewProject() {
     withAuth(async (token) => {
@@ -131,10 +131,10 @@ function createNewProject() {
                 body: JSON.stringify({ values: [["ID", "照片網址"]] })
             });
             
-            // 寫入標準 properties
+            // 🚀 核心：將標籤寫入 description (即時索引)
             await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}`, {
                 method: 'PATCH', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ properties: { app: 'iCheckInHere', version: 'v0.7' } })
+                body: JSON.stringify({ description: 'iCheckInHere_Workspace_v07' })
             });
 
             currentProject = { id: sheetId, name: title };
@@ -150,44 +150,27 @@ function openProjectSelector() {
     withAuth(async (token) => {
         document.getElementById('projectModal').style.display = 'flex';
         const container = document.getElementById('projectListContainer');
-        container.innerHTML = '啟動雙軌引擎搜尋中...';
+        container.innerHTML = '掃描雲端專案中...';
         
         try {
-            // 🚀 軌道 1 (熱軌道)：抓取最近 100 個檔案，用前端過濾 (解決剛建立還沒被 Google 索引的狀況)
-            const queryRecent = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
-            const reqRecent = fetch(`https://www.googleapis.com/drive/v3/files?q=${queryRecent}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime,properties)`, {
+            // 🚀 核心：一次拉取 1000 個檔案 (有 drive.file 保護，只會拉到本 APP 建的)，並要求回傳 description
+            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&pageSize=1000&fields=files(id,name,createdTime,description)`, {
                 headers: { 'Authorization': `Bearer ${token}` }
-            }).then(res => res.json());
-
-            // 🚀 軌道 2 (冷軌道)：依賴 Google 屬性索引，抓取歷史所有專案 (解決專案被 100 個新檔案淹沒的狀況)
-            const queryIndexed = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and properties has { key='app' and value='iCheckInHere' } and trashed=false");
-            const reqIndexed = fetch(`https://www.googleapis.com/drive/v3/files?q=${queryIndexed}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime,properties)`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            }).then(res => res.json());
-
-            // 雙軌並行發射請求 (不增加等待時間)
-            const [resRecent, resIndexed] = await Promise.all([reqRecent, reqIndexed]);
-
-            // 過濾熱軌道資料
-            const recentFiltered = (resRecent.files || []).filter(f => f.properties && f.properties.app === 'iCheckInHere');
-            const indexedFiles = resIndexed.files || [];
-
-            // 🚀 合併並去重 (Deduplication)
-            const projectMap = new Map();
-            indexedFiles.forEach(f => projectMap.set(f.id, f)); // 先塞舊的
-            recentFiltered.forEach(f => projectMap.set(f.id, f)); // 再塞新的 (如果重複會覆蓋)
-
-            const combinedFiles = Array.from(projectMap.values());
+            });
+            const data = await res.json();
             
-            // 依時間降冪排序 (最新的在上面)
-            combinedFiles.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
+            // 🚀 Client-side 過濾：瞬間在前端比對 description，徹底消滅 Google 索引延遲！
+            const compatibleFiles = (data.files || []).filter(f => 
+                f.description && f.description.includes('iCheckInHere_Workspace')
+            );
             
-            if (combinedFiles.length === 0) {
+            if (compatibleFiles.length === 0) {
                 container.innerHTML = '<p>找不到相容的專案。請點擊「建立專案」產生新的資料庫。</p>';
                 return;
             }
             
-            container.innerHTML = combinedFiles.map(f => `
+            container.innerHTML = compatibleFiles.map(f => `
                 <div class="project-item" onclick="bindProject('${f.id}', '${f.name}')">
                     <strong>${f.name}</strong><br>
                     <small style="color:#666;">建立於: ${new Date(f.createdTime).toLocaleDateString()}</small>
@@ -332,70 +315,4 @@ function performCheckIn() {
     }, err => alert('定位失敗，請確認手機權限'), { enableHighAccuracy: true });
 }
 
-function startEdit(id) { editingId = id; evaluateSession(); }
-function cancelEdit() { editingId = null; evaluateSession(); }
-function saveEdit(id) {
-    const record = records.find(r=>r.id===id);
-    record.notes = document.getElementById(`edit-notes-${id}`).value;
-    const linksText = document.getElementById(`edit-links-${id}`).value;
-    record.media_links = linksText.split('\n').map(l=>l.trim()).filter(l=>l!=='');
-    record.sync_status = 'LOCAL_ONLY';
-    editingId = null;
-    
-    const wasTrusted = (syncSession === 'TRUSTED');
-    evaluateSession();
-    if (wasTrusted) pushUnsyncedData();
-}
-
-function deleteRecord(id) {
-    if(!confirm('確定要刪除此紀錄嗎？')) return;
-    const record = records.find(r=>r.id===id);
-    record.deleted = true;
-    record.sync_status = 'LOCAL_ONLY';
-    
-    const wasTrusted = (syncSession === 'TRUSTED');
-    evaluateSession();
-    if (wasTrusted) pushUnsyncedData();
-}
-
-function shareRecord(id) {
-    const r = records.find(x => x.id === id);
-    const mapsUrl = `http://googleusercontent.com/maps.google.com/6{r.latitude},${r.longitude}`;
-    let text = `📍 iCheckInHere 現勘打卡\n⏱️ 時間: ${new Date(r.check_in_time).toLocaleString()}\n⚡ 台電: ${r.tp_coord}\n🗺️ 導航: ${mapsUrl}\n`;
-    if (r.notes) text += `📝 備註: ${r.notes}\n`;
-    if (navigator.share) { navigator.share({ title: '現勘座標', text: text }).catch(e=>console.log(e)); } 
-    else { navigator.clipboard.writeText(text); alert('✅ 內容已複製，可貼上至 LINE！'); }
-}
-
-function renderUI() {
-    const list = document.getElementById('checkInList');
-    const visibleRecords = records.filter(r => !r.deleted);
-    
-    list.innerHTML = visibleRecords.map(r => {
-        if (r.id === editingId) {
-            return `<div class="card" style="border: 2px solid #3b82f6;">
-                <textarea id="edit-notes-${r.id}" placeholder="備註 (可選)" rows="2">${r.notes || ''}</textarea>
-                <textarea id="edit-links-${r.id}" placeholder="照片網址 (可多行)" rows="2">${(r.media_links || []).join('\n')}</textarea>
-                <div style="display: flex; gap: 5px; margin-top:5px;">
-                    <button onclick="saveEdit('${r.id}')" class="btn btn-primary" style="padding:8px; margin:0;">💾 儲存</button>
-                    <button onclick="cancelEdit()" class="btn" style="padding:8px; margin:0; background:#e2e8f0; color:#333;">❌ 取消</button>
-                </div>
-            </div>`;
-        }
-        
-        return `<div class="card">
-            <p style="font-size: 0.8em; color: #666; margin: 0;">${new Date(r.check_in_time).toLocaleString()} 
-                <span style="float:right;">${r.sync_status==='LOCAL_ONLY' ? '⚠️ 未備份' : '🟢 已上雲'}</span>
-            </p>
-            <p style="font-family: monospace; margin: 5px 0;">🧭 ${r.latitude.toFixed(5)}, ${r.longitude.toFixed(5)}</p>
-            <div style="margin: 5px 0;"><span class="tp-badge">⚡ ${r.tp_coord}</span></div>
-            ${r.media_links && r.media_links.length > 0 ? `<p style="font-size: 0.8em; color: #0052cc;">📸 附件: ${r.media_links.length} 張圖</p>` : ''}
-            ${r.notes ? `<p style="margin: 5px 0; font-weight:bold;">📝 ${r.notes}</p>` : ''}
-            <div style="display: flex; gap: 5px; margin-top: 10px;">
-                <button onclick="shareRecord('${r.id}')" style="flex: 1; border:1px solid #ccc; background:#fff; padding:6px; border-radius:4px;">📤 分享</button>
-                <button onclick="startEdit('${r.id}')" style="flex: 1; border:1px solid #ccc; background:#fff; padding:6px; border-radius:4px;">✏️ 編輯</button>
-                <button onclick="deleteRecord('${r.id}')" style="flex: 1; background: #fee2e2; color: #dc2626; border:none; padding:6px; border-radius:4px;">🗑️ 刪除</button>
-            </div>
-        </div>`;
-    }).join('');
-}
+function startEdit(id) { editingId =
