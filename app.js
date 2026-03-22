@@ -1,21 +1,19 @@
 // ==========================================
 // 📍 iCheckInHere - 領域驅動架構 (v0.7 SPEC)
-// 包含: Soft Delete, Metadata 辨識, TRUSTED 狀態機
 // ==========================================
 
 const CLIENT_ID = '201112785315-pg6mrlaeig65sfu24mjfkjj544sf5mlj.apps.googleusercontent.com';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file';
 
-// --- L1 Data Contracts ---
 let records = JSON.parse(localStorage.getItem('checkins') || '[]');
-let currentProject = JSON.parse(localStorage.getItem('current_project') || 'null'); // { id, name }
+let currentProject = JSON.parse(localStorage.getItem('current_project') || 'null');
 let syncSession = 'UNTRUSTED';
 let currentAccessToken = null;
 let tokenClient;
 let editingId = null;
 
 // ==========================================
-// 0. 台電電力座標引擎 (嚴格遵守 TW67 平移與區塊邊界)
+// 0. 台電電力座標引擎 
 // ==========================================
 (function() {
     'use strict';
@@ -23,23 +21,11 @@ let editingId = null;
     const e2 = (a*a - b*b) / (a*a);
     const ePrime2 = (a*a - b*b) / (b*b);
     const lon0 = 121 * Math.PI/180, k0 = 0.9999, FE = 250000, FN = 0;
-    const SHIFT_X = 828.589, SHIFT_Y = -206.915; // TW67 -> TW97
+    const SHIFT_X = 828.589, SHIFT_Y = -206.915; 
   
-    const XminTable = {
-      170000: ['A','D','G','K','N','Q','T','V'], 250000: ['B','E','H','L','O','R','U','W'],
-       90000: ['J','M','P'], 330000: ['C','F']
-    };
-    const YminTable = {
-      2750000: ['A','B','C'], 2700000: ['D','E','F'], 2650000: ['G','H'], 2600000: ['J','K','L'],
-      2550000: ['M','N','O'], 2500000: ['P','Q','R'], 2450000: ['T','U'], 2400000: ['V','W']
-    };
-    
-    const VALID_REGIONS = (() => {
-      const s = new Set();
-      Object.values(XminTable).forEach(v => v.forEach(c => s.add(c)));
-      Object.values(YminTable).forEach(v => v.forEach(c => s.add(c)));
-      return Array.from(s);
-    })();
+    const XminTable = { 170000: ['A','D','G','K','N','Q','T','V'], 250000: ['B','E','H','L','O','R','U','W'], 90000: ['J','M','P'], 330000: ['C','F'] };
+    const YminTable = { 2750000: ['A','B','C'], 2700000: ['D','E','F'], 2650000: ['G','H'], 2600000: ['J','K','L'], 2550000: ['M','N','O'], 2500000: ['P','Q','R'], 2450000: ['T','U'], 2400000: ['V','W'] };
+    const VALID_REGIONS = (() => { const s = new Set(); Object.values(XminTable).forEach(v => v.forEach(c => s.add(c))); Object.values(YminTable).forEach(v => v.forEach(c => s.add(c))); return Array.from(s); })();
   
     function getRegionOriginTW67(region){
       region = region.toUpperCase();
@@ -55,14 +41,9 @@ let editingId = null;
       const N = a / Math.sqrt(1 - e2 * Math.sin(lat)**2);
       const T = Math.tan(lat)**2, C = ePrime2 * Math.cos(lat)**2;
       const A = Math.cos(lat) * (lon - lon0);
-      const M = a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * lat
-        - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * Math.sin(2*lat)
-        + (15*e2**2/256 + 45*e2**3/1024) * Math.sin(4*lat)
-        - (35*e2**3/3072) * Math.sin(6*lat));
-      
+      const M = a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * lat - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * Math.sin(2*lat) + (15*e2**2/256 + 45*e2**3/1024) * Math.sin(4*lat) - (35*e2**3/3072) * Math.sin(6*lat));
       const x97 = FE + k0 * N * (A + (1 - T + C)*A**3/6 + (5 - 18*T + T**2 + 72*C - 58*ePrime2)*A**5/120);
       const y97 = FN + k0 * (M + N*Math.tan(lat) * (A**2/2 + (5 - T + 9*C + 4*C**2)*A**4/24 + (61 - 58*T + T**2 + 600*C - 330*ePrime2)*A**6/720));
-      
       const X67 = x97 - SHIFT_X, Y67 = y97 - SHIFT_Y;
       
       let chosen = null;
@@ -71,36 +52,28 @@ let editingId = null;
         const dX = X67 - origin.Xmin, dY = Y67 - origin.Ymin;
         if (dX>=0 && dX<80000 && dY>=0 && dY<50000){ chosen = {region:r, origin, dX, dY}; break; }
       }
-      if(!chosen) throw new Error('座標超出定義範圍');
+      if(!chosen) throw new Error('座標超出範圍');
       
       const EE = Math.floor(chosen.dX/800), NN = Math.floor(chosen.dY/500);
       const rx = chosen.dX - EE*800, ry = chosen.dY - NN*500;
       const subE = Math.floor(rx/100), subN = Math.floor(ry/100);
-      const E_CHAR = 'ABCDEFGH', N_CHAR='ABCDE';
       const ex = Math.floor(rx - subE*100), ey = Math.floor(ry - subN*100);
-      const p=Math.floor(ex/10), r_val=Math.floor(ex%10), q=Math.floor(ey/10), s=Math.floor(ey%10);
-      
-      return `${chosen.region}${String(EE).padStart(2,'0')}${String(NN).padStart(2,'0')}${E_CHAR[subE]}${N_CHAR[subN]}${p}${q}${r_val}${s}`;
+      return `${chosen.region}${String(EE).padStart(2,'0')}${String(NN).padStart(2,'0')} ${'ABCDEFGH'[subE]}${'ABCDE'[subN]}${Math.floor(ex/10)}${Math.floor(ey/10)}${Math.floor(ex%10)}${Math.floor(ey%10)}`;
     };
 })();
 
 // ==========================================
-// 1. Session 狀態機與初始化 (W-Login)
+// 1. Session 狀態機與初始化
 // ==========================================
 window.onload = function() {
     evaluateSession();
-    if (window.google) {
-        tokenClient = google.accounts.oauth2.initTokenClient({ client_id: CLIENT_ID, scope: SCOPES, callback: '' });
-    }
+    if (window.google) tokenClient = google.accounts.oauth2.initTokenClient({ client_id: CLIENT_ID, scope: SCOPES, callback: '' });
 };
 
 function logMsg(msg) { document.getElementById('systemLog').innerText = msg; }
 
 function evaluateSession() {
-    // 過濾出真實有效的 records (排除本地已標記 deleted 的)
-    const validRecords = records.filter(r => !r.deleted);
-    const hasLocalOnly = records.some(r => r.sync_status === 'LOCAL_ONLY'); // 包含待上傳的刪除指令
-    
+    const hasLocalOnly = records.some(r => r.sync_status === 'LOCAL_ONLY');
     document.getElementById('currentProjectName').innerText = currentProject ? currentProject.name : '尚未綁定專案';
     
     if (currentAccessToken && currentProject && !hasLocalOnly) {
@@ -112,7 +85,6 @@ function evaluateSession() {
         document.getElementById('sessionStatus').className = 'status-badge status-untrusted';
         document.getElementById('sessionStatus').innerText = '⚠️ UNTRUSTED (打卡僅存本地)';
     }
-    
     localStorage.setItem('checkins', JSON.stringify(records));
     renderUI();
 }
@@ -123,7 +95,7 @@ function withAuth(actionCallback) {
         tokenClient.callback = async (resp) => {
             if (resp.error) return alert('授權失敗，請重試！');
             currentAccessToken = resp.access_token;
-            evaluateSession(); // R-008: 登入後盤點，不自動上傳
+            evaluateSession();
             actionCallback(currentAccessToken);
         };
         tokenClient.requestAccessToken();
@@ -131,7 +103,7 @@ function withAuth(actionCallback) {
 }
 
 // ==========================================
-// 2. 專案建立與 Metadata 辨識 (W-Create / W-Select)
+// 2. 專案建立與 Metadata 辨識 (改用 Description)
 // ==========================================
 function createNewProject() {
     withAuth(async (token) => {
@@ -142,7 +114,6 @@ function createNewProject() {
         const title = `iCheckInHere 現場記錄 (${today})`;
         
         try {
-            // 1. 建立 Spreadsheet
             const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
                 method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ properties: { title: title }, sheets: [{ properties: { title: '打卡主檔' } }, { properties: { title: '照片交易檔' } }] })
@@ -150,7 +121,6 @@ function createNewProject() {
             const data = await res.json();
             const sheetId = data.spreadsheetId;
             
-            // 2. 寫入 Schema (包含新增的 Deleted 欄位)
             await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/打卡主檔!A1:I1?valueInputOption=USER_ENTERED`, {
                 method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ values: [["ID", "打卡時間", "定位時間", "緯度", "經度", "精準度", "電力座標", "備註", "Deleted"]] })
@@ -159,14 +129,13 @@ function createNewProject() {
                 method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ values: [["ID", "照片網址"]] })
             });
-
-            // 3. 🚀 植入 Developer Metadata (改用公開相容的 properties)
+            
+            // 🚀 核心修正：將 Metadata 寫入 description，確保即時被索引
             await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}`, {
                 method: 'PATCH', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ properties: { app: 'iCheckInHere', version: 'v0.7' } }) // 👈 這裡的 appProperties 改成 properties
+                body: JSON.stringify({ description: 'iCheckInHere_Workspace_v07' })
             });
-            
-            // 4. 重置本地與綁定
+
             currentProject = { id: sheetId, name: title };
             localStorage.setItem('current_project', JSON.stringify(currentProject));
             records = []; 
@@ -181,17 +150,17 @@ function openProjectSelector() {
         document.getElementById('projectModal').style.display = 'flex';
         const container = document.getElementById('projectListContainer');
         container.innerHTML = '搜尋雲端專案中...';
-
+        
         try {
-            // 🚀 核心：利用 Drive API 結合 Metadata 進行精準篩選 (改用 properties)
-            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and properties has { key='app' and value='iCheckInHere' } and trashed=false"); // 👈 這裡的 appProperties 改成 properties
+            // 🚀 核心修正：利用 description 進行精準且即時的搜尋
+            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and description contains 'iCheckInHere_Workspace_v07' and trashed=false");
             const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,createdTime)`, {
                 headers: { 'Authorization': `Bearer ${token}` }
-            });            
+            });
             const data = await res.json();
             
             if (!data.files || data.files.length === 0) {
-                container.innerHTML = '<p>找不到相容的專案，請先建立新專案。</p>';
+                container.innerHTML = '<p>找不到相容的專案。請點擊「建立專案」產生新的資料庫。</p>';
                 return;
             }
             
@@ -202,7 +171,7 @@ function openProjectSelector() {
                 </div>
             `).join('');
             
-        } catch (e) { container.innerHTML = '🔴 搜尋失敗'; }
+        } catch (e) { container.innerHTML = '🔴 搜尋失敗'; console.error(e); }
     });
 }
 
@@ -213,11 +182,11 @@ function bindProject(id, name) {
     currentProject = { id: id, name: name };
     localStorage.setItem('current_project', JSON.stringify(currentProject));
     closeProjectSelector();
-    pullFromCloud(); // 自動覆寫
+    pullFromCloud(); 
 }
 
 // ==========================================
-// 3. Diff-Sync 同步引擎 (W-Push / W-Overwrite)
+// 3. Diff-Sync 同步引擎 (Push / Pull)
 // ==========================================
 function pushUnsyncedData() {
     if (!currentProject) return alert('請先綁定或建立專案！');
@@ -227,45 +196,32 @@ function pushUnsyncedData() {
     logMsg(`⏳ 分析與推播 ${unsynced.length} 筆異動...`);
     withAuth(async (token) => {
         try {
-            // 1. 取得雲端 A 欄 (ID) 以判斷是 Update 還是 Append
             const idRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${currentProject.id}/values/打卡主檔!A:A`, { headers:{'Authorization':`Bearer ${token}`} });
             const idData = await idRes.json();
             const cloudIds = idData.values ? idData.values.map(row => row[0]) : [];
             
             const appendMain = [], appendPhoto = [];
-            const updateBatch = []; // 用於 batchUpdate
+            const updateBatch = [];
 
             unsynced.forEach(r => {
                 const isDeletedStr = r.deleted ? "TRUE" : "FALSE";
-                const rowIndex = cloudIds.indexOf(r.id) + 1; // Google Sheet Row is 1-based
-                
+                const rowIndex = cloudIds.indexOf(r.id) + 1; 
                 if (rowIndex > 0) {
-                    // 已存在於雲端：執行 Update (通常是標記 Soft Delete 或修改備註)
-                    updateBatch.push({
-                        range: `打卡主檔!A${rowIndex}:I${rowIndex}`,
-                        values: [[r.id, r.check_in_time, r.location_time, r.latitude, r.longitude, r.accuracy, r.tp_coord, r.notes, isDeletedStr]]
-                    });
+                    updateBatch.push({ range: `打卡主檔!A${rowIndex}:I${rowIndex}`, values: [[r.id, r.check_in_time, r.location_time, r.latitude, r.longitude, r.accuracy, r.tp_coord, r.notes, isDeletedStr]] });
                 } else {
-                    // 不存在雲端：
-                    if (r.deleted) {
-                        // 在本地建立又在本地刪除，雲端不知道，直接略過不用上傳
-                    } else {
-                        // 執行 Append
+                    if (!r.deleted) {
                         appendMain.push([r.id, r.check_in_time, r.location_time, r.latitude, r.longitude, r.accuracy, r.tp_coord, r.notes, isDeletedStr]);
                         if (r.media_links) r.media_links.forEach(link => appendPhoto.push([r.id, link]));
                     }
                 }
             });
 
-            // 2. 執行 Update (如果有)
             if (updateBatch.length > 0) {
                 await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${currentProject.id}/values:batchUpdate`, {
                     method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: updateBatch })
                 });
             }
-
-            // 3. 執行 Append (如果有)
             if (appendMain.length > 0) {
                 await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${currentProject.id}/values/打卡主檔!A1:append?valueInputOption=USER_ENTERED`, {
                     method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -279,11 +235,9 @@ function pushUnsyncedData() {
                 });
             }
 
-            // 4. 清理本地：將所有上傳成功的標記為 SYNCED，並將已邏輯刪除的資料從記憶體徹底抹除
             records.forEach(r => { if (r.sync_status === 'LOCAL_ONLY') r.sync_status = 'SYNCED'; });
-            records = records.filter(r => !r.deleted); // 只有成功推上雲端後，才在本地物理移除
-            
-            evaluateSession(); // R-010: 手動 Push 成功，進入 TRUSTED
+            records = records.filter(r => !r.deleted); 
+            evaluateSession(); 
             logMsg('🟢 同步完成！');
         } catch (e) { logMsg('🔴 推播失敗'); console.error(e); }
     });
@@ -312,9 +266,7 @@ function pullFromCloud() {
             if (mainData.values && mainData.values.length > 1) {
                 for (let i=1; i<mainData.values.length; i++){
                     const row = mainData.values[i];
-                    // 🚀 R-025: Overwrite 時必須過濾 deleted 紀錄
-                    const isDeleted = row[8] === 'TRUE';
-                    if (!isDeleted) {
+                    if (row[8] !== 'TRUE') {
                         newRecords.push({ 
                             id: row[0], check_in_time: row[1], location_time: row[2], 
                             latitude: parseFloat(row[3]), longitude: parseFloat(row[4]), accuracy: parseFloat(row[5]), 
@@ -325,14 +277,14 @@ function pullFromCloud() {
                 }
             }
             records = newRecords.reverse();
-            evaluateSession(); // R-010: Overwrite 成功，無 LOCAL_ONLY，進入 TRUSTED
+            evaluateSession(); 
             logMsg('🟢 載入完成！');
         } catch (e) { logMsg('🔴 載入失敗'); console.error(e); }
     });
 }
 
 // ==========================================
-// 4. 現場作業與刪除模型 (W-CheckIn / W-Delete)
+// 4. 現場作業與刪除模型 
 // ==========================================
 function performCheckIn() {
     if (!navigator.geolocation) return alert('瀏覽器不支援定位');
@@ -342,18 +294,15 @@ function performCheckIn() {
         try { tpString = window.wgs84ToTaipower(pos.coords.latitude, pos.coords.longitude); } 
         catch (e) { tpString = '座標超出定義範圍'; }
         
-        const newRecord = {
+        records.unshift({
             id: crypto.randomUUID(), check_in_time: new Date().toISOString(), location_time: new Date().toISOString(),
             latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy,
             tp_coord: tpString, notes: '', deleted: false, media_links: [], sync_status: 'LOCAL_ONLY'
-        };
+        });
         
-        records.unshift(newRecord);
-        evaluateSession(); // 評估狀態 (有新資料，若原為 Trusted 則不變，若 Untrusted 仍是 Untrusted)
+        evaluateSession();
         logMsg('📍 打卡完成');
-        
-        // 🚀 自動同步判定 (W-CheckIn)
-        if (syncSession === 'TRUSTED') { pushUnsyncedData(); }
+        if (syncSession === 'TRUSTED') pushUnsyncedData();
     }, err => alert('定位失敗，請確認手機權限'), { enableHighAccuracy: true });
 }
 
@@ -366,15 +315,13 @@ function saveEdit(id) {
     record.media_links = linksText.split('\n').map(l=>l.trim()).filter(l=>l!=='');
     record.sync_status = 'LOCAL_ONLY';
     editingId = null;
-    evaluateSession(); // 修改資料導致狀態降級為 UNTRUSTED
-    if (syncSession === 'TRUSTED') pushUnsyncedData(); // 防禦性寫法
+    evaluateSession();
+    if (syncSession === 'TRUSTED') pushUnsyncedData();
 }
 
 function deleteRecord(id) {
-    if(!confirm('確定要刪除此紀錄嗎？ (將啟動安全邏輯刪除)')) return;
+    if(!confirm('確定要刪除此紀錄嗎？')) return;
     const record = records.find(r=>r.id===id);
-    
-    // 🚀 R-022 Soft Delete 模型：不直接實體移除，標記狀態並等待推播
     record.deleted = true;
     record.sync_status = 'LOCAL_ONLY';
     evaluateSession();
@@ -392,7 +339,6 @@ function shareRecord(id) {
 
 function renderUI() {
     const list = document.getElementById('checkInList');
-    // 過濾掉 deleted 的記錄不顯示於 UI
     const visibleRecords = records.filter(r => !r.deleted);
     
     list.innerHTML = visibleRecords.map(r => {
