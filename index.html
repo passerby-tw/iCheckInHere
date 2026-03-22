@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <link rel="manifest" href="manifest.json">
-    <title>📍 iCheckInHere v0.7.5</title>
+    <title>📍 iCheckInHere v1.0</title>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 600px; margin: auto; background: #f4f7f6; color: #333; }
@@ -23,7 +23,7 @@
         
         #projectModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; align-items: center; justify-content: center; }
         .modal-content { background: white; width: 90%; max-width: 400px; padding: 20px; border-radius: 12px; max-height: 80vh; overflow-y: auto; }
-        .project-item { padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; }
+        .project-item { padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;}
         .project-item:hover { background: #f8f9fa; }
     </style>
 </head>
@@ -31,16 +31,16 @@
 
     <button class="btn btn-primary" onclick="performCheckIn()" style="padding: 20px; font-size: 22px; margin-bottom: 20px;">📍 立即現場打卡</button>
 
-    <details class="panel">
+    <details class="panel" open>
         <summary style="font-weight: bold; font-size: 1.05em; color: #0052cc; cursor: pointer; outline: none;">
-            ⚙️ 專案與同步設定 (點擊展開)
+            ⚙️ 專案與同步設定
         </summary>
         <div style="margin-top: 20px;">
             <div class="panel-title">📂 目前專案 (Workspace)</div>
-            <div id="currentProjectName" style="font-weight: bold; font-size: 1.1em; margin-bottom: 15px;">尚未綁定專案</div>
+            <div id="currentProjectName" style="font-weight: bold; font-size: 1.1em; margin-bottom: 15px; color: #333;">尚未綁定專案</div>
             <div style="display: flex; gap: 8px;">
-                <button onclick="openProjectSelector()" style="flex: 1; padding: 10px; background: #e2e8f0; border: none; border-radius: 6px; font-weight: bold; color: #475569;">🔍 選取專案</button>
-                <button onclick="createNewProject()" style="flex: 1; padding: 10px; background: #10b981; color: white; border: none; border-radius: 6px; font-weight: bold;">🆕 建立專案</button>
+                <button onclick="openProjectSelector()" style="flex: 1; padding: 10px; background: #e2e8f0; border: none; border-radius: 6px; font-weight: bold; color: #475569;">🔍 選取/綁定專案</button>
+                <button onclick="createNewProject()" style="flex: 1; padding: 10px; background: #10b981; color: white; border: none; border-radius: 6px; font-weight: bold;">🆕 建立新專案</button>
             </div>
             
             <hr style="border: 0.5px solid #e1e4e8; margin: 15px 0;">
@@ -59,9 +59,21 @@
 
     <div id="projectModal">
         <div class="modal-content">
-            <h3 style="margin-top: 0;">選擇雲端專案</h3>
-            <div id="projectListContainer" style="margin-top: 15px;">載入中...</div>
-            <button onclick="closeProjectSelector()" style="width: 100%; padding: 10px; margin-top: 15px; background: #e2e8f0; border: none; border-radius: 6px; font-weight: bold;">取消</button>
+            <h3 style="margin-top: 0; color: #0052cc;">📂 專案管理</h3>
+            <p style="font-size: 0.85em; color: #666;">從本機歷史紀錄選擇，或直接貼上網址綁定。</p>
+            
+            <div style="display: flex; gap: 5px; margin-bottom: 15px;">
+                <input type="text" id="manualUrlInput" placeholder="貼上 Google 試算表網址..." style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; margin-top:0;">
+                <button onclick="bindManualUrl()" id="bindBtn" style="background:#0052cc; color:white; border:none; border-radius:4px; padding:0 15px; font-weight:bold;">驗證並綁定</button>
+            </div>
+
+            <hr style="border: 0.5px solid #eee; margin: 15px 0;">
+            <div style="font-size: 0.9em; font-weight: bold; margin-bottom: 10px;">🕒 最近使用的專案</div>
+            
+            <div id="projectListContainer" style="max-height: 250px; overflow-y: auto; border: 1px solid #eee; border-radius: 6px;">
+                </div>
+
+            <button onclick="closeProjectSelector()" style="width: 100%; padding: 10px; margin-top: 15px; background: #e2e8f0; border: none; border-radius: 6px; font-weight: bold; color: #333;">關閉</button>
         </div>
     </div>
 
