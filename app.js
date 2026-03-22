@@ -150,34 +150,37 @@ function openProjectSelector() {
     withAuth(async (token) => {
         document.getElementById('projectModal').style.display = 'flex';
         const container = document.getElementById('projectListContainer');
-        container.innerHTML = '掃描雲端專案中...';
+        container.innerHTML = '掃描雲端專案中... (Debug 模式)';
         
         try {
-            // 🚀 核心：一次拉取 1000 個檔案 (有 drive.file 保護，只會拉到本 APP 建的)，並要求回傳 description
+            // 1. 抓取本 APP 建立的所有試算表，要求回傳 description
             const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
-            const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&pageSize=1000&fields=files(id,name,createdTime,description)`, {
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&pageSize=100&fields=files(id,name,createdTime,description)`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
             
-            // 🚀 Client-side 過濾：瞬間在前端比對 description，徹底消滅 Google 索引延遲！
-            const compatibleFiles = (data.files || []).filter(f => 
-                f.description && f.description.includes('iCheckInHere_Workspace')
-            );
+            // 2. 🚀 【Debug】拔除 filter，直接顯示 API 吐出來的所有檔案！
+            const allFiles = data.files || [];
             
-            if (compatibleFiles.length === 0) {
-                container.innerHTML = '<p>找不到相容的專案。請點擊「建立專案」產生新的資料庫。</p>';
+            if (allFiles.length === 0) {
+                container.innerHTML = '<p>Google Drive API 查無任何由此 APP 建立的專案。請點擊「建立專案」產生新的資料庫。</p>';
                 return;
             }
             
-            container.innerHTML = compatibleFiles.map(f => `
+            // 3. 渲染列表，並把真實的 description 印出來看
+            container.innerHTML = allFiles.map(f => `
                 <div class="project-item" onclick="bindProject('${f.id}', '${f.name}')">
                     <strong>${f.name}</strong><br>
-                    <small style="color:#666;">建立於: ${new Date(f.createdTime).toLocaleDateString()}</small>
+                    <small style="color:#666;">建立於: ${new Date(f.createdTime).toLocaleDateString()}</small><br>
+                    <small style="color:#d9534f; font-weight: bold;">[Debug 標籤]: ${f.description || '無 description (undefined)'}</small>
                 </div>
             `).join('');
             
-        } catch (e) { container.innerHTML = '🔴 搜尋失敗，請檢查網路狀態'; console.error(e); }
+        } catch (e) { 
+            container.innerHTML = '🔴 搜尋失敗，請檢查主控台 (Console)'; 
+            console.error(e); 
+        }
     });
 }
 
