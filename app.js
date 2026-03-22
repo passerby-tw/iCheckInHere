@@ -159,13 +159,13 @@ function createNewProject() {
                 method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ values: [["ID", "照片網址"]] })
             });
-            
-            // 3. 🚀 植入 Developer Metadata (Drive appProperties)
+
+            // 3. 🚀 植入 Developer Metadata (改用公開相容的 properties)
             await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}`, {
                 method: 'PATCH', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ appProperties: { app: 'iCheckInHere', version: 'v0.7' } })
+                body: JSON.stringify({ properties: { app: 'iCheckInHere', version: 'v0.7' } }) // 👈 這裡的 appProperties 改成 properties
             });
-
+            
             // 4. 重置本地與綁定
             currentProject = { id: sheetId, name: title };
             localStorage.setItem('current_project', JSON.stringify(currentProject));
@@ -181,13 +181,13 @@ function openProjectSelector() {
         document.getElementById('projectModal').style.display = 'flex';
         const container = document.getElementById('projectListContainer');
         container.innerHTML = '搜尋雲端專案中...';
-        
+
         try {
-            // 🚀 核心：利用 Drive API 結合 Metadata 進行精準篩選
-            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and appProperties has { key='app' and value='iCheckInHere' } and trashed=false");
+            // 🚀 核心：利用 Drive API 結合 Metadata 進行精準篩選 (改用 properties)
+            const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and properties has { key='app' and value='iCheckInHere' } and trashed=false"); // 👈 這裡的 appProperties 改成 properties
             const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,createdTime)`, {
                 headers: { 'Authorization': `Bearer ${token}` }
-            });
+            });            
             const data = await res.json();
             
             if (!data.files || data.files.length === 0) {
