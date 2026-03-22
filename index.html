@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="manifest" href="manifest.json">
+    <title>📍 iCheckInHere</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 600px; margin: auto; background: #f9f9f9; }
+        .btn { padding: 15px; font-size: 18px; width: 100%; background: #007bff; color: white; border: none; border-radius: 8px; margin-bottom: 20px; cursor: pointer; }
+        .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        .link-list { list-style: none; padding: 0; }
+        .link-list li { margin-bottom: 8px; }
+        .link-list a { display: block; padding: 10px; background: #e9ecef; text-decoration: none; color: #333; border-radius: 5px; }
+        input, textarea { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+    <button class="btn" onclick="performCheckIn()">📍 立即打卡</button>
+    
+    <details class="card" style="background: #fff3cd; cursor: pointer;">
+        <summary style="font-weight: bold; outline: none;">⚙️ 專案雲端設定與同步 (點擊展開)</summary>
+        <div style="margin-top: 15px; cursor: default;">
+            <p style="font-size: 0.85em; color: #666; margin-bottom: 5px;">目前的專案資料庫網址：</p>
+            <input type="text" id="apiUrlInput" placeholder="請貼上 Google 試算表網址，或點擊下方新建">
+            
+            <div style="display: flex; gap: 5px; margin-top: 10px;">
+                <button onclick="bindNewSheet()" style="flex: 1; background: #007bff; color: white;">🔗 綁定並切換</button>
+                <button onclick="createNewSheet()" style="flex: 1; background: #28a745; color: white;">🆕 讓系統建一個</button>
+            </div>
+            
+            <hr style="border: 0.5px solid #ffe69c; margin: 15px 0;">
+            
+            <p style="font-size: 0.85em; color: #666; margin-bottom: 5px;">資料流向控制 (需登入驗證)：</p>
+            <button onclick="pushUnsyncedData()" style="width: 100%; margin-bottom: 5px; background: #17a2b8; color: white;">☁️ 向上推播 (同步未備份至雲端)</button>
+            <button onclick="pullFromCloud()" style="width: 100%; margin-bottom: 5px; background: #6c757d; color: white;">📥 向下覆寫 (清空本地，載入雲端)</button>
+            
+            <p id="testStatus" style="margin-top: 10px; font-weight: bold; text-align: center;"></p>
+        </div>
+    </details>
+
+    <div id="checkInList"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
