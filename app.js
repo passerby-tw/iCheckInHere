@@ -1,14 +1,15 @@
 // ==========================================
-// 📍 iCheckInHere - 領域驅動架構 (v1.0 Executable Spec)
-// 核心：Validation over Assumption, Local-First History
+// 📍 iCheckInHere - 領域驅動架構 (v1.1 Executable Spec)
+// 核心：Strict Layered Constraints & Validation by Load
 // ==========================================
 
 const CLIENT_ID = '201112785315-pg6mrlaeig65sfu24mjfkjj544sf5mlj.apps.googleusercontent.com';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file';
 
+// --- L1: Storage Contracts ---
 let records = JSON.parse(localStorage.getItem('checkins') || '[]');
 let currentProject = JSON.parse(localStorage.getItem('current_project') || 'null');
-let projectHistory = JSON.parse(localStorage.getItem('project_history') || '[]'); 
+let projectHistory = JSON.parse(localStorage.getItem('project_history') || '[]'); // R-010 Known Project Set
 let currentAccessToken = localStorage.getItem('google_access_token') || null;
 let tokenExpiry = localStorage.getItem('google_token_expiry') || null;
 
@@ -17,7 +18,7 @@ let tokenClient;
 let editingId = null;
 
 // ==========================================
-// 0. 台電電力座標引擎 
+// 0. 台電電力座標引擎 (Deterministic Geo)
 // ==========================================
 (function() {
     'use strict';
@@ -67,7 +68,7 @@ let editingId = null;
 })();
 
 // ==========================================
-// 1. Session 狀態機與初始化
+// 1. Session 狀態機與初始化 (W-Login)
 // ==========================================
 window.onload = function() {
     if (currentAccessToken && tokenExpiry && Date.now() > parseInt(tokenExpiry)) {
@@ -81,11 +82,11 @@ window.onload = function() {
 
 function logMsg(msg) { document.getElementById('systemLog').innerText = msg; }
 
+// R-015 Sync Model: State Machine Evaluator
 function evaluateSession() {
     const hasLocalOnly = records.some(r => r.sync_status === 'LOCAL_ONLY');
     document.getElementById('currentProjectName').innerText = currentProject ? currentProject.name : '尚未綁定專案';
     
-    // R-010 ~ R-012: Trusted condition requires Auth, Project, and NO local-only data
     if (currentAccessToken && currentProject && !hasLocalOnly) {
         syncSession = 'TRUSTED';
         document.getElementById('sessionStatus').className = 'status-badge status-trusted';
@@ -110,7 +111,7 @@ function withAuth(actionCallback) {
             tokenExpiry = Date.now() + (expiresIn * 1000);
             localStorage.setItem('google_access_token', currentAccessToken);
             localStorage.setItem('google_token_expiry', tokenExpiry.toString());
-            evaluateSession();
+            evaluateSession(); // NO implicit sync on login (NG-006)
             actionCallback(currentAccessToken);
         };
         tokenClient.requestAccessToken();
@@ -118,7 +119,7 @@ function withAuth(actionCallback) {
 }
 
 // ==========================================
-// 2. 專案建立與嚴格驗證 (R-012, NG-004)
+// 2. 專案建立與嚴格驗證 (W-Create / W-Select / R-012)
 // ==========================================
 function saveToProjectHistory(id, name, time) {
     const existing = projectHistory.find(p => p.id === id);
@@ -129,19 +130,20 @@ function saveToProjectHistory(id, name, time) {
 }
 
 function removeProjectFromHistory(id, event) {
-    if(event) event.stopPropagation(); // 阻止觸發外層的綁定點擊
-    if(!confirm('確定要從本地清單移除此紀錄嗎？(不會刪除雲端檔案)')) return;
+    if(event) event.stopPropagation(); 
+    if(!confirm('確定要從本地清單移除此紀錄嗎？(不影響雲端檔案)')) return;
     projectHistory = projectHistory.filter(p => p.id !== id);
     localStorage.setItem('project_history', JSON.stringify(projectHistory));
     renderProjectListModal();
 }
 
 function createNewProject() {
+    // NG-005: Warn before overwrite
     if (records.some(r => r.sync_status === 'LOCAL_ONLY') && !confirm('⚠️ 有未同步資料，切換專案將重置工作區。確定繼續嗎？')) return;
     
     const today = new Date().toISOString().split('T')[0];
     const defaultTitle = `iCheckInHere 現場記錄 (${today})`;
-    const customTitle = prompt('請為新專案命名 (或加上備註)：', defaultTitle);
+    const customTitle = prompt('請為新專案命名：', defaultTitle);
     if (!customTitle) return; 
 
     withAuth(async (token) => {
@@ -175,7 +177,27 @@ function createNewProject() {
 
 function openProjectSelector() {
     document.getElementById('projectModal').style.display = 'flex';
-    renderProjectListModal(); 
+    renderProjectListModal(); // Primary: Load from history (NG-001)
+
+    // Secondary: Optional Cloud Enrichment
+    if (currentAccessToken) {
+        const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+        fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&pageSize=50&fields=files(id,name,createdTime)`, {
+            headers: { 'Authorization': `Bearer ${currentAccessToken}` }
+        }).then(res => res.json()).then(data => {
+            if (data.files) {
+                let enriched = false;
+                data.files.forEach(f => {
+                    // Only add obvious candidates to history to avoid clutter
+                    if (f.name.includes('iCheckInHere') || f.name.includes('現場')) {
+                        const exists = projectHistory.some(p => p.id === f.id);
+                        if (!exists) { saveToProjectHistory(f.id, f.name, f.createdTime); enriched = true; }
+                    }
+                });
+                if(enriched) renderProjectListModal(); 
+            }
+        }).catch(e => console.log('Optional enrichment skipped', e));
+    }
 }
 
 function closeProjectSelector() { 
@@ -211,7 +233,7 @@ function bindManualUrl() {
     validateAndBindProject(match[1]);
 }
 
-// 🚀 R-012: 嚴格驗證 (Data Load Attempt)。不依賴名字，只依賴能不能讀出 Schema！
+// 🚀 R-012, NG-002, NG-003, NG-004: Validation by Load (The Core Guardian)
 function validateAndBindProject(id) {
     if (records.some(r => r.sync_status === 'LOCAL_ONLY') && !confirm('⚠️ 有未同步資料，強制切換將清空本地未備份資料！確定嗎？')) {
         document.getElementById('bindBtn').innerText = '驗證並綁定';
@@ -221,7 +243,7 @@ function validateAndBindProject(id) {
 
     withAuth(async (token) => {
         try {
-            // 嘗試讀取 Schema (主檔 A1:I1) 與 Meta (取得真實檔名)
+            // Attempt Data Load & Schema Check
             const [dataRes, metaRes] = await Promise.all([
                 fetch(`https://sheets.googleapis.com/v4/spreadsheets/${id}/values/打卡主檔!A1:I1`, { headers:{'Authorization':`Bearer ${token}`} }),
                 fetch(`https://sheets.googleapis.com/v4/spreadsheets/${id}`, { headers:{'Authorization':`Bearer ${token}`} })
@@ -232,12 +254,11 @@ function validateAndBindProject(id) {
             const data = await dataRes.json();
             const meta = await metaRes.json();
             
-            // 驗證 Schema 是否相容 (至少要能讀到欄位，且長度合理)
+            // Schema Validation (Must match expected columns)
             if (!data.values || data.values[0].length < 8) throw new Error('試算表格式不符 (非打卡專案結構)');
 
             const realName = meta.properties ? meta.properties.title : '已綁定專案';
             
-            // 驗證通過：寫入歷史與當前狀態
             saveToProjectHistory(id, realName, new Date().toISOString());
             currentProject = { id: id, name: realName };
             localStorage.setItem('current_project', JSON.stringify(currentProject));
@@ -246,19 +267,19 @@ function validateAndBindProject(id) {
             document.getElementById('bindBtn').disabled = false;
             
             closeProjectSelector();
-            pullFromCloud(); // 正式載入資料
+            pullFromCloud(); // W-Select step 6/7
 
         } catch (e) {
             document.getElementById('bindBtn').innerText = '驗證並綁定';
             document.getElementById('bindBtn').disabled = false;
-            alert(`🔴 綁定失敗: ${e.message}。請確認網址正確且您擁有編輯權限。`);
+            alert(`🔴 綁定失敗: ${e.message}`);
         }
     });
 }
 
 
 // ==========================================
-// 3. Diff-Sync 同步引擎 (R-013, R-014)
+// 3. Diff-Sync 同步引擎 (W-Push / W-Overwrite)
 // ==========================================
 function pushUnsyncedData() {
     if (!currentProject) return alert('請先綁定或建立專案！');
@@ -308,8 +329,8 @@ function pushUnsyncedData() {
             }
 
             records.forEach(r => { if (r.sync_status === 'LOCAL_ONLY') r.sync_status = 'SYNCED'; });
-            records = records.filter(r => !r.deleted); 
-            evaluateSession(); 
+            records = records.filter(r => !r.deleted); // Clean up logical deletes locally
+            evaluateSession(); // R-016: Elevate to TRUSTED after push
             logMsg('🟢 同步完成！');
         } catch (e) { logMsg('🔴 推播失敗'); console.error(e); }
     });
@@ -338,7 +359,7 @@ function pullFromCloud() {
             if (mainData.values && mainData.values.length > 1) {
                 for (let i=1; i<mainData.values.length; i++){
                     const row = mainData.values[i];
-                    // R-014: 嚴格過濾已被標記邏輯刪除的資料
+                    // R-014: Overwrite must exclude deleted records
                     if (row[8] !== 'TRUE') {
                         newRecords.push({ 
                             id: row[0], check_in_time: row[1], location_time: row[2], 
@@ -350,19 +371,20 @@ function pullFromCloud() {
                 }
             }
             records = newRecords.reverse();
-            evaluateSession(); 
+            evaluateSession(); // R-016: Elevate to TRUSTED after clean overwrite
             logMsg('🟢 載入完成！');
         } catch (e) { logMsg('🔴 載入失敗，權限不足或檔案已刪除'); console.error(e); }
     });
 }
 
 // ==========================================
-// 4. 現場作業與刪除模型 (W-CheckIn)
+// 4. 現場作業與刪除模型 (W-CheckIn / W-Delete)
 // ==========================================
 function performCheckIn() {
     if (!navigator.geolocation) return alert('瀏覽器不支援定位');
     logMsg('⏳ 定位中...');
     
+    // R-016: Check session BEFORE modifying data
     const wasTrusted = (syncSession === 'TRUSTED'); 
 
     navigator.geolocation.getCurrentPosition(pos => {
@@ -378,7 +400,7 @@ function performCheckIn() {
         
         evaluateSession(); 
         logMsg('📍 打卡完成');
-        if (wasTrusted) pushUnsyncedData(); 
+        if (wasTrusted) pushUnsyncedData(); // Auto-push only if originally trusted
     }, err => alert('定位失敗，請確認手機權限'), { enableHighAccuracy: true });
 }
 
@@ -400,6 +422,8 @@ function saveEdit(id) {
 function deleteRecord(id) {
     if(!confirm('確定要刪除此紀錄嗎？')) return;
     const record = records.find(r=>r.id===id);
+    
+    // R-013: Soft Delete logical state
     record.deleted = true;
     record.sync_status = 'LOCAL_ONLY';
     
@@ -410,7 +434,7 @@ function deleteRecord(id) {
 
 function shareRecord(id) {
     const r = records.find(x => x.id === id);
-    const mapsUrl = `https://www.google.com/maps?q=24.1413,120.6841{r.latitude},${r.longitude}`;
+    const mapsUrl = `http://maps.google.com/maps?q=${r.latitude},${r.longitude}`;
     let text = `📍 iCheckInHere 現勘打卡\n⏱️ 時間: ${new Date(r.check_in_time).toLocaleString()}\n⚡ 台電: ${r.tp_coord}\n🗺️ 導航: ${mapsUrl}\n`;
     if (r.notes) text += `📝 備註: ${r.notes}\n`;
     if (navigator.share) { navigator.share({ title: '現勘座標', text: text }).catch(e=>console.log(e)); } 
@@ -419,6 +443,7 @@ function shareRecord(id) {
 
 function renderUI() {
     const list = document.getElementById('checkInList');
+    // R-014: Filter out soft-deleted records from UI
     const visibleRecords = records.filter(r => !r.deleted);
     
     list.innerHTML = visibleRecords.map(r => {
